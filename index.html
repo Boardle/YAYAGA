@@ -84,6 +84,19 @@
     z-index:60; cursor:pointer;
   }
   @media (max-width:420px){ #chatToggleBtn{ right:16px; } }
+  #bgmToggleBtn{
+    position:fixed; bottom:150px; right:calc(50% - 195px + 16px);
+    width:48px;height:48px;border-radius:50%;
+    background:linear-gradient(135deg,#FF4D82,#FFB627);
+    border:none; color:#fff; font-size:20px;
+    box-shadow:0 6px 16px rgba(0,0,0,.4);
+    z-index:60; cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    touch-action:none;
+  }
+  #bgmToggleBtn.off{ background:var(--panel-2); border:1px solid var(--border); opacity:.75; }
+  #bgmToggleBtn.warn{ background:var(--panel-2); border:1px solid var(--border); opacity:.6; }
+  @media (max-width:420px){ #bgmToggleBtn{ right:16px; } }
   #chatUnreadBadge{
     position:absolute; top:-4px; right:-4px; background:var(--pink);
     color:#fff; font-size:10px; font-weight:800; border-radius:999px;
@@ -825,6 +838,8 @@
   </div>
 
   <button id="chatToggleBtn" class="hidden">💬<span id="chatUnreadBadge" class="hidden">0</span></button>
+  <button id="bgmToggleBtn" title="배경음악 켜기/끄기">🔇</button>
+  <audio id="bgmAudio" loop preload="none"></audio>
   <div id="chatPanel" class="hidden">
     <div class="chat-header">
       <span>💬 채팅</span>
@@ -4587,7 +4602,24 @@
     S.seotdaLastReveal1RenderKey = null;
     S.seotdaLastFinal2RenderKey = null;
     S.seotdaSubmittingAction = false;
+    // These force-finalize counters are keyed by handNumber, which restarts
+    // at 1 for every new session — a leftover maxed-out counter would make
+    // the new session's hand 1 instantly hit the cap and skip the card
+    // selection screen with no time to choose at all.
+    S.seotdaRevealTickHand = null;
+    S.seotdaRevealTickCount = 0;
+    S.seotdaLastRevealCheckAt = 0;
+    S.seotdaFinal2TickHand = null;
+    S.seotdaFinal2TickCount = 0;
+    S.seotdaLastFinal2CheckAt = 0;
+    S.seotdaAllinStuckKey = null;
     S.pokerMyOpenSubmitted = null;
+    S.pokerOpenTickHand = null;
+    S.pokerOpenTickCount = 0;
+    S.pokerLastOpenCheckAt = 0;
+    S.bjBetTickHand = null;
+    S.bjBetTickCount = 0;
+    S.bjLastBetCheckAt = 0;
     S.pokerOpenSelection = null;
     S.pokerLastChooseOpenKey = null;
     S.bjMyBetSubmitted = null;
@@ -4743,7 +4775,7 @@
       // Set on the HOST's clock — every other player loses their network
       // propagation time out of this window, so on a slow connection a 5s
       // limit could expire before they ever saw the selection screen.
-      state.chooseRevealDeadline = Date.now()+10000;
+      state.chooseRevealDeadline = Date.now()+13000;
     } else {
       state.phase = 'betting';
     }
@@ -6531,7 +6563,7 @@
     const isHoldemChoosable = fresh.cardMode==='holdem' && fresh.communityCard;
     if((fresh.cardMode>=3 || isHoldemChoosable) && contenders.length>1){
       fresh.finalChoice = {};
-      fresh.chooseFinalDeadline = Date.now()+10000; // host-clock window — see chooseRevealDeadline
+      fresh.chooseFinalDeadline = Date.now()+13000; // host-clock window — see chooseRevealDeadline
       fresh.phase = 'chooseFinal2';
       S.seotda = fresh; S.room = freshRoom;
       renderSeotda();
@@ -6831,7 +6863,7 @@
       const hnKeyR = S.seotda.handNumber||1;
       if(S.seotdaRevealTickHand!==hnKeyR){ S.seotdaRevealTickHand=hnKeyR; S.seotdaRevealTickCount=0; }
       const deadlinePassed = Date.now() >= (S.seotda.chooseRevealDeadline||0);
-      const tickForced = (S.seotdaRevealTickCount||0) >= 10;
+      const tickForced = (S.seotdaRevealTickCount||0) >= 20; // last-resort stall guard only — must never beat the real deadline
       const forceFinalize = deadlinePassed || tickForced;
       const throttleOk = forceFinalize || Date.now()-(S.seotdaLastRevealCheckAt||0) > 1500;
       if(throttleOk){
@@ -6879,7 +6911,7 @@
       const hnKeyF2 = S.seotda.handNumber||1;
       if(S.seotdaFinal2TickHand!==hnKeyF2){ S.seotdaFinal2TickHand=hnKeyF2; S.seotdaFinal2TickCount=0; }
       const deadlinePassed2 = Date.now() >= (S.seotda.chooseFinalDeadline||0);
-      const tickForced2 = (S.seotdaFinal2TickCount||0) >= 10; // independent hard cap — never depends on the deadline field alone
+      const tickForced2 = (S.seotdaFinal2TickCount||0) >= 20; // last-resort stall guard only — must never beat the real deadline
       const forceFinalize2 = deadlinePassed2 || tickForced2;
       const throttleOk2 = forceFinalize2 || Date.now()-(S.seotdaLastFinal2CheckAt||0) > 1500;
       if(throttleOk2){
@@ -8278,7 +8310,7 @@
       const hnKey = S.poker.handNumber||1;
       if(S.pokerOpenTickHand!==hnKey){ S.pokerOpenTickHand=hnKey; S.pokerOpenTickCount=0; }
       const deadlinePassed = Date.now() >= (S.poker.chooseOpenDeadline||0);
-      const tickForced = (S.pokerOpenTickCount||0) >= 10;
+      const tickForced = (S.pokerOpenTickCount||0) >= 30; // last-resort stall guard only (600ms throttle) — must never beat the real deadline
       const forceFinalize = deadlinePassed || tickForced;
       const throttleOk = forceFinalize || Date.now()-(S.pokerLastOpenCheckAt||0) > 600;
       if(throttleOk){
@@ -10349,7 +10381,7 @@
       const hnKey = S.blackjack.handNumber||1;
       if(S.bjBetTickHand!==hnKey){ S.bjBetTickHand=hnKey; S.bjBetTickCount=0; }
       const deadlinePassed = Date.now() >= (S.blackjack.betDeadline||0);
-      const tickForced = (S.bjBetTickCount||0) >= 10;
+      const tickForced = (S.bjBetTickCount||0) >= 25; // last-resort stall guard only (700ms throttle) — must never beat the real deadline
       const forceFinalize = deadlinePassed || tickForced;
       const throttleOk = forceFinalize || Date.now()-(S.bjLastBetCheckAt||0) > 700;
       if(throttleOk){
@@ -11597,6 +11629,108 @@
     await showAlertModal('🎲 베팅 시뮬레이터 사용법\n\n오프라인으로 카드게임을 할 때 칩 대신 쓰는 도구예요.\n\n1. 실제 카드게임의 베팅 차례에 맞는 플레이어를 탭하세요.\n2. 베팅 버튼(삥/쿼터/하프/콜/맥스/따당/체크/다이)을 눌러 그 사람의 베팅을 기록하세요.\n3. 승부가 결정되면 "정산"을 눌러 승자를 고르면 판돈이 지급돼요.\n4. 누군가 코인이 0이 되면 사이클이 끝나고, 다음 사이클이 있으면 코인이 초기화돼요.');
   });
 
+
+  /* =================== BACKGROUND MUSIC =================== */
+  (function setupBgm(){
+    // Listed in order of preference. The first is a plain relative path, so
+    // if the mp3 sits next to this html it's same-origin — nothing to block
+    // and nothing to configure. The others are fallbacks to the separate BGM
+    // repo in case the file is only hosted there.
+    const CANDIDATES = [
+      'bgm-manhole.mp3',
+      'https://raw.githubusercontent.com/Boardle/BGM/main/bgm-manhole.mp3',
+      'https://raw.githubusercontent.com/Boardle/BGM/main/42%20Manhole.wav',
+    ];
+    const audio = document.getElementById('bgmAudio');
+    const btn = document.getElementById('bgmToggleBtn');
+    if(!audio || !btn) return;
+    audio.volume = 0.3;
+    let on = false, exhausted = false;
+
+    function paint(){
+      btn.textContent = exhausted ? '⚠️' : (on ? '🔊' : '🔇');
+      btn.classList.toggle('off', !on && !exhausted);
+      btn.classList.toggle('warn', exhausted);
+    }
+    paint();
+
+    async function startPlayback(){
+      for(let i=0;i<CANDIDATES.length;i++){
+        audio.src = CANDIDATES[i];
+        try{ audio.load(); }catch(e){}
+        try{ await audio.play(); return true; }
+        catch(e){ /* try the next source */ }
+      }
+      return false;
+    }
+
+    async function toggle(){
+      if(exhausted){ showToast('배경음악을 불러오지 못했어요'); return; }
+      if(on){ on = false; audio.pause(); paint(); return; }
+      on = true; paint();
+      const ok = await startPlayback();
+      if(!ok){ on = false; exhausted = true; showToast('배경음악을 불러오지 못했어요'); }
+      paint();
+    }
+
+    // Same draggable behaviour as the chat button, including the guard for
+    // the synthesized mouse events a touch fires afterwards, and clamping so
+    // the button can never be dragged off the edge of the screen.
+    let dragging=false, moved=false, startX=0, startY=0, startLeft=0, startTop=0, lastTouchAt=0;
+    function ensurePositioned(){
+      if(btn.dataset.positioned) return;
+      const rect = btn.getBoundingClientRect();
+      btn.style.left = rect.left+'px';
+      btn.style.top = rect.top+'px';
+      btn.style.right='auto'; btn.style.bottom='auto';
+      btn.dataset.positioned='1';
+    }
+    function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+    function onDown(e){
+      if(e.type==='touchstart') lastTouchAt = Date.now();
+      else if(Date.now()-lastTouchAt < 700) return; // synthesized after a touch
+      ensurePositioned();
+      dragging=true; moved=false;
+      const p = e.touches ? e.touches[0] : e;
+      startX=p.clientX; startY=p.clientY;
+      const rect = btn.getBoundingClientRect();
+      startLeft=rect.left; startTop=rect.top;
+      btn.style.transition='none';
+    }
+    function onMove(e){
+      if(!dragging) return;
+      const p = e.touches ? e.touches[0] : e;
+      const dx=p.clientX-startX, dy=p.clientY-startY;
+      if(Math.abs(dx)>12 || Math.abs(dy)>12) moved=true;
+      if(!moved) return;
+      e.preventDefault();
+      const w=btn.offsetWidth, h=btn.offsetHeight;
+      btn.style.left = clamp(startLeft+dx, 4, window.innerWidth-w-4)+'px';
+      btn.style.top  = clamp(startTop+dy, 4, window.innerHeight-h-4)+'px';
+    }
+    function onUp(){
+      if(!dragging) return;
+      dragging=false;
+      btn.style.transition='';
+      if(!moved) toggle();
+    }
+    btn.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    btn.addEventListener('touchstart', onDown, {passive:true});
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('touchend', onUp);
+
+    // If the window is resized (or a phone rotated) after the button has been
+    // dragged, pull it back inside the new viewport bounds.
+    window.addEventListener('resize', ()=>{
+      if(!btn.dataset.positioned) return;
+      const w=btn.offsetWidth, h=btn.offsetHeight;
+      const rect = btn.getBoundingClientRect();
+      btn.style.left = clamp(rect.left, 4, window.innerWidth-w-4)+'px';
+      btn.style.top  = clamp(rect.top, 4, window.innerHeight-h-4)+'px';
+    });
+  })();
 
   /* =================== INIT =================== */
   switchScreen('screen-home');
