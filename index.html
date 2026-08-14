@@ -7855,8 +7855,23 @@
         const phrase = la.allIn && la.act!=='die' ? 'All in!' : SEOTDA_ACTION_SPEECH[la.act];
         if(phrase) speak(phrase);
       }
+      // Sequential showdown: call out each hand's rank as it flips over.
+      if(fresh.phase==='revealing' && (fresh.revealIndex||0) > (prev.revealIndex||0)){
+        const order = fresh.revealOrder||[];
+        const justRevealed = order[(fresh.revealIndex||0)-1];
+        const label = justRevealed && fresh.lastResult && fresh.lastResult.byId
+          ? fresh.lastResult.byId[justRevealed] : null;
+        if(label){
+          sfxCommunityReveal();
+          speak(String(label), 'ko-KR');
+        }
+      }
     }
-    S.pokerPrev = { lastActionTs: fresh.lastAction ? fresh.lastAction.ts : null };
+    S.pokerPrev = {
+      lastActionTs: fresh.lastAction ? fresh.lastAction.ts : null,
+      phase: fresh.phase,
+      revealIndex: fresh.revealIndex||0
+    };
   }
 
   /* =================== POKER RENDERING =================== */
@@ -8384,7 +8399,7 @@
             const order = fresh.revealOrder||[];
             if(fresh.revealIndex < order.length){
               fresh.revealIndex += 1;
-              fresh.revealNextAt = fresh.revealIndex>=order.length ? Date.now()+250 : Date.now()+120;
+              fresh.revealNextAt = fresh.revealIndex>=order.length ? Date.now()+900 : Date.now()+1100; // pace so each spoken hand rank is audible
               if(fresh.revealIndex>=order.length) fresh.revealDone = true;
               await writePoker(fresh);
               S.poker = fresh; renderPoker();
@@ -8798,9 +8813,10 @@
       if(indianCompareHands(fresh.variant, a, b)>0) winnerId = id;
     });
     const winnerP = freshRoom.players.find(p=>p.id===winnerId);
-    // No sequential per-player stepping needed — everyone's card can be
-    // shown at once (opponents' cards were already visible throughout;
-    // only each player's own card newly flips into view).
+    // No sequential per-player stepping — everyone's card is shown at once.
+    // Opponents' cards were already visible throughout the hand; only each
+    // player's own card newly flips into view, so there's nothing to unveil
+    // one at a time the way there is in seotda/poker.
     fresh.lastResult = { winnerId, winnerName: winnerP?winnerP.name:'?', potWon: fresh.pot||0, folded:false, byId, payouts, payoutApplied:false };
     fresh.revealOrder = contenders;
     fresh.revealIndex = contenders.length;
@@ -8876,7 +8892,11 @@
         if(phrase) speak(phrase);
       }
     }
-    S.indianPrev = { lastActionTs: fresh.lastAction ? fresh.lastAction.ts : null };
+    S.indianPrev = {
+      lastActionTs: fresh.lastAction ? fresh.lastAction.ts : null,
+      phase: fresh.phase,
+      revealIndex: fresh.revealIndex||0
+    };
   }
 
   /* =================== INDIAN POKER RENDERING =================== */
@@ -10668,16 +10688,25 @@
       }
     }
     if(!btn) return;
-    if(!inParty){ btn.textContent = normalText; return; }
-    btn.disabled = !isHost();
-    // This is only ever called while the underlying game itself is showing
-    // its own cycleEnd screen — so we already know a party cycle just
-    // ended. Predict whether this was the LAST cycle from cycleIndex
-    // directly, rather than waiting for the host's own (host-only, polling-
-    // driven) processing to catch up and officially flip phase to
-    // 'partyOver' — that gap was showing "다음 사이클로" for a few seconds
-    // before correcting itself to "로비로 돌아가기".
+    if(!inParty){
+      btn.textContent = normalText;
+      btn.disabled = false;
+      btn.style.opacity = '';
+      return;
+    }
+    const amHost = isHost();
+    btn.disabled = !amHost;
+    // Make the non-host state unmistakable. Relying on the disabled attribute
+    // alone was fragile: the host-click handler re-enables the button on a
+    // timer, and a render landing in that window could leave it looking
+    // active for everyone.
+    btn.style.opacity = amHost ? '' : '.45';
+    btn.style.cursor = amHost ? '' : 'not-allowed';
     const isLastCycle = S.party.phase==='partyOver' || ((S.party.cycleIndex||0) >= (S.party.totalCycles||1));
+    if(!amHost){
+      btn.textContent = '방장이 진행해요';
+      return;
+    }
     btn.textContent = isLastCycle ? '🏠 로비로 돌아가기' : '▶️ 다음 사이클로';
   }
 
@@ -11162,6 +11191,10 @@
       S.partyTransitionStartedAt = null;
     }
     const transitionStuck = S.partyTransitionStartedAt && (Date.now()-S.partyTransitionStartedAt > 14000);
+    // The manual overlay is only a stop-gap for the click-to-launch gap. Once
+    // the new game is actually running, drop it immediately rather than
+    // leaving a spinner covering a game that's already playable.
+    if(S.party.phase==='playing' && S.partyForceShowTransition) S.partyForceShowTransition = null;
     const manualOverlayActive = S.partyForceShowTransition && (Date.now()-S.partyForceShowTransition < 8000);
     const isTransitioning = (S.party.phase==='transitioning' || manualOverlayActive) && !S.party.quiz && !transitionStuck;
     transitionOverlay.classList.toggle('hidden', !isTransitioning);
