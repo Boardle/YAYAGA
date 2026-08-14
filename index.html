@@ -4032,8 +4032,15 @@
   // Per-player keys for the "choose N cards" steps — each player writes only
   // to their OWN key, so two people choosing around the same moment can
   // never clobber each other's choice via last-write-wins on one shared field.
-  function seotdaRevealChoiceKey(code, hand, playerId){ return 'seotdaReveal:'+code+':'+hand+':'+playerId; }
-  function seotdaFinalChoiceKey(code, hand, playerId){ return 'seotdaFinal:'+code+':'+hand+':'+playerId; }
+  // The session component is essential: handNumber restarts at 1 for every
+  // new session (a new party cycle, or just replaying from the lobby), so
+  // without it a new session's hand 1 reads back the PREVIOUS session's
+  // saved cards. That both skipped the selection screen entirely (the data
+  // already "existed", so everyone looked submitted) and revealed cards the
+  // player never actually holds.
+  function seotdaSession(){ return (S.seotda && S.seotda.sessionId) || 'nosess'; }
+  function seotdaRevealChoiceKey(code, hand, playerId){ return 'seotdaReveal:'+code+':'+seotdaSession()+':'+hand+':'+playerId; }
+  function seotdaFinalChoiceKey(code, hand, playerId){ return 'seotdaFinal:'+code+':'+seotdaSession()+':'+hand+':'+playerId; }
   // Every write bumps a revision counter. Poll reads that come back with a
   // lower revision than what we already have locally (a stale snapshot,
   // e.g. read-after-write lag) get ignored instead of clobbering the UI.
@@ -4237,11 +4244,24 @@
       }
       if(fresh.phase==='replayOffer' && prev.phase!=='replayOffer') sfxReplay();
       if(fresh.communityRevealed && !prev.communityRevealed) sfxCommunityReveal();
+      // Sequential showdown: each time the next player's cards flip, call out
+      // their hand rank so the reveal can be followed by ear too.
+      if(fresh.phase==='revealing' && (fresh.revealIndex||0) > (prev.revealIndex||0)){
+        const order = fresh.revealOrder||[];
+        const justRevealed = order[(fresh.revealIndex||0)-1];
+        const label = justRevealed && fresh.lastResult && fresh.lastResult.byId
+          ? fresh.lastResult.byId[justRevealed] : null;
+        if(label){
+          sfxCommunityReveal();
+          speak(String(label), 'ko-KR');
+        }
+      }
     }
     S.seotdaPrev = {
       phase: fresh.phase, pot: fresh.pot||0, foldedCount: (fresh.foldedIds||[]).length,
       baseBet: fresh.baseBet||0, lastActionTs: fresh.lastAction ? fresh.lastAction.ts : null,
-      communityRevealed: !!fresh.communityRevealed
+      communityRevealed: !!fresh.communityRevealed,
+      revealIndex: fresh.revealIndex||0
     };
   }
 
@@ -4583,6 +4603,7 @@
     freshRoom.phase = 'seotda';
 
     const state = {
+      sessionId: Date.now()+'_'+Math.floor(Math.random()*1000000),
       startCoins, baseBet, cardMode: ([2,3,4].includes(cardMode) || cardMode==='holdem') ? cardMode : 2, missionMode: !!missionMode, mixedMode: !!mixedMode,
       dealerIndex: 0,
       handNumber: 1,
@@ -6921,9 +6942,9 @@
               fresh.revealIndex += 1;
               if(fresh.revealIndex >= order.length){
                 fresh.revealDone = true;
-                fresh.revealNextAt = Date.now()+350; // let the chip-collect animation play
+                fresh.revealNextAt = Date.now()+900; // let the last call-out finish + chip-collect animation
               } else {
-                fresh.revealNextAt = Date.now()+200;
+                fresh.revealNextAt = Date.now()+1100; // pace so each hand's spoken rank is audible
               }
               await writeSeotda(fresh);
               S.seotda = fresh;
@@ -10423,24 +10444,7 @@
       startCoins, baseBet,
       rev: (S.blackjack && S.blackjack.rev) || 0,
     };
-    if(S.party && S.party.active){
-      // Party mode: skip the interactive "pick a card to see who deals
-      // first" minigame entirely — just randomly shuffle the order and go
-      // straight to betting. The minigame is fun for a standalone
-      // blackjack session but was the single biggest chunk of delay when
-      // players are just waiting to get into the next random game.
-      const shuffled = freshRoom.players.map(p=>p.id);
-      for(let i=shuffled.length-1;i>0;i--){
-        const j = Math.floor(Math.random()*(i+1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      state.dealerOrder = shuffled;
-      state.dealerRoundIndex = 0;
-      state.handNumber = 1;
-      bjStartBetSelect(state, freshRoom);
-    } else {
-      bjStartDealerDraw(state, freshRoom);
-    }
+    bjStartDealerDraw(state, freshRoom);
     freshRoom.updatedAt = Date.now();
     S.roomWriteFailed = true; S.blackjackWriteFailed = true;
     await Promise.all([ writeRoom(freshRoom), writeBlackjack(state) ]);
