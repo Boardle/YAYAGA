@@ -985,7 +985,7 @@
         <div id="relayLetterDots" style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
         <div class="ticket small" style="text-align:center;margin-bottom:12px;" id="relayAssignmentBox"></div>
         <div class="guess-input-row hidden" id="relayGuessForm">
-          <input id="relayGuessInput" maxlength="1" placeholder="한 글자만" autocomplete="off" enterkeyhint="send" style="text-align:center;font-family:'Jua',sans-serif;font-size:18px;">
+          <input id="relayGuessInput" placeholder="한 글자만" autocomplete="off" enterkeyhint="send" style="text-align:center;font-family:'Jua',sans-serif;font-size:18px;">
           <button class="btn btn-mint" type="button" style="width:auto;padding:12px 16px;" id="relaySubmitBtn">제출</button>
         </div>
         <div class="center-msg" id="relayProgressMsg"></div>
@@ -3627,6 +3627,10 @@
     submitRelayLetter();
   });
   document.getElementById('relayGuessInput').addEventListener('input', (e)=>{
+    if(e.isComposing) return; // Korean/Japanese/Chinese IME composition in progress — leave it alone
+    if(e.target.value.length>1) e.target.value = e.target.value.slice(-1);
+  });
+  document.getElementById('relayGuessInput').addEventListener('compositionend', (e)=>{
     if(e.target.value.length>1) e.target.value = e.target.value.slice(-1);
   });
   document.getElementById('relayGuessInput').addEventListener('keydown', (e)=>{
@@ -6939,18 +6943,27 @@
               fresh.phase = 'replayOffer';
               await writeSeotda(fresh);
               S.seotda = fresh;
-            } else if(fresh.lastResult.payoutApplied){
-              // Already handled — this read caught a moment where the phase
-              // transition hadn't visibly landed yet. Do nothing rather than
-              // risk paying out the pot a second time.
-            } else {
+            } else if(!fresh.lastResult.resultHoldUntil){
+              // Payout not yet applied for this hand — compute it now, but
+              // hold here (still showing the revealed hands + winner) for a
+              // few seconds before actually moving on. Previously this
+              // transitioned the instant the last card flipped, which relied
+              // entirely on network round-trip time to be readable at all —
+              // with a fast backend that's no pause whatsoever.
               const payouts = fresh.lastResult.payouts || { [fresh.lastResult.winnerId]: fresh.lastResult.potWon||0 };
               Object.keys(payouts).forEach(pid=>{
                 const p = freshRoom.players.find(pp=>pp.id===pid);
                 if(p) p.coins = (p.coins||0) + (payouts[pid]||0);
               });
               fresh.lastResult.payoutApplied = true;
+              fresh.lastResult.resultHoldUntil = Date.now()+3000;
               freshRoom.updatedAt = Date.now();
+              await Promise.all([writeRoom(freshRoom), writeSeotda(fresh)]);
+              S.room = freshRoom; S.seotda = fresh;
+            } else if(Date.now() < fresh.lastResult.resultHoldUntil){
+              // Still within the hold window — leave everything as-is so the
+              // result stays visible.
+            } else {
               const brokePlayer = freshRoom.players.find(p=>(p.coins||0)<=0);
               if(brokePlayer){
                 fresh.phase='cycleEnd';
@@ -8335,16 +8348,9 @@
             freshRoom = S.room;
           }
           if(fresh && fresh.phase==='revealing' && fresh.revealDone && freshRoom && fresh.lastResult){
-            if(fresh.lastResult.payoutApplied){
-              // already handled — stale re-read, do nothing
-            } else {
-              const payouts = fresh.lastResult.payouts || { [fresh.lastResult.winnerId]: fresh.lastResult.potWon||0 };
-              Object.keys(payouts).forEach(pid=>{
-                const p = freshRoom.players.find(pp=>pp.id===pid);
-                if(p) p.coins = (p.coins||0) + (payouts[pid]||0);
-              });
-              fresh.lastResult.payoutApplied = true;
-              freshRoom.updatedAt = Date.now();
+            if(fresh.lastResult.payoutApplied && fresh.lastResult.resultHoldUntil && Date.now() < fresh.lastResult.resultHoldUntil){
+              // still within the hold window — leave the result on screen
+            } else if(fresh.lastResult.payoutApplied){
               const brokePlayer = freshRoom.players.find(p=>(p.coins||0)<=0);
               if(brokePlayer){
                 fresh.phase='cycleEnd';
@@ -8363,6 +8369,23 @@
                 freshRoom.updatedAt = Date.now();
                 await Promise.all([writeRoom(freshRoom), writePoker(fresh)]);
               }
+              S.room = freshRoom; S.poker = fresh;
+              renderPoker();
+            } else {
+              // Payout not yet applied — compute it now, but hold the result
+              // on screen for a few seconds before actually moving on.
+              // Previously this transitioned the instant the last card
+              // flipped, relying entirely on network round-trip time to be
+              // readable — with a fast backend that left no pause at all.
+              const payouts = fresh.lastResult.payouts || { [fresh.lastResult.winnerId]: fresh.lastResult.potWon||0 };
+              Object.keys(payouts).forEach(pid=>{
+                const p = freshRoom.players.find(pp=>pp.id===pid);
+                if(p) p.coins = (p.coins||0) + (payouts[pid]||0);
+              });
+              fresh.lastResult.payoutApplied = true;
+              fresh.lastResult.resultHoldUntil = Date.now()+3000;
+              freshRoom.updatedAt = Date.now();
+              await Promise.all([writeRoom(freshRoom), writePoker(fresh)]);
               S.room = freshRoom; S.poker = fresh;
               renderPoker();
             }
@@ -9162,16 +9185,9 @@
             freshRoom = S.room;
           }
           if(fresh && fresh.phase==='revealing' && fresh.revealDone && freshRoom && fresh.lastResult){
-            if(fresh.lastResult.payoutApplied){
-              // already handled — stale re-read, do nothing
-            } else {
-              const payouts = fresh.lastResult.payouts || { [fresh.lastResult.winnerId]: fresh.lastResult.potWon||0 };
-              Object.keys(payouts).forEach(pid=>{
-                const p = freshRoom.players.find(pp=>pp.id===pid);
-                if(p) p.coins = (p.coins||0) + (payouts[pid]||0);
-              });
-              fresh.lastResult.payoutApplied = true;
-              freshRoom.updatedAt = Date.now();
+            if(fresh.lastResult.payoutApplied && fresh.lastResult.resultHoldUntil && Date.now() < fresh.lastResult.resultHoldUntil){
+              // still within the hold window — leave the result on screen
+            } else if(fresh.lastResult.payoutApplied){
               const brokePlayer = freshRoom.players.find(p=>(p.coins||0)<=0);
               if(brokePlayer){
                 fresh.phase='cycleEnd';
@@ -9190,6 +9206,20 @@
                 freshRoom.updatedAt = Date.now();
                 await Promise.all([writeRoom(freshRoom), writeIndian(fresh)]);
               }
+              S.room = freshRoom; S.indian = fresh;
+              renderIndian();
+            } else {
+              // Payout not yet applied — compute it now, but hold the result
+              // on screen for a few seconds before actually moving on.
+              const payouts = fresh.lastResult.payouts || { [fresh.lastResult.winnerId]: fresh.lastResult.potWon||0 };
+              Object.keys(payouts).forEach(pid=>{
+                const p = freshRoom.players.find(pp=>pp.id===pid);
+                if(p) p.coins = (p.coins||0) + (payouts[pid]||0);
+              });
+              fresh.lastResult.payoutApplied = true;
+              fresh.lastResult.resultHoldUntil = Date.now()+3000;
+              freshRoom.updatedAt = Date.now();
+              await Promise.all([writeRoom(freshRoom), writeIndian(fresh)]);
               S.room = freshRoom; S.indian = fresh;
               renderIndian();
             }
@@ -10892,7 +10922,13 @@
       // can only ever admit answers that were genuinely in time.
       const deadlinePassed = Date.now() >= (S.party.quiz.deadline||0) + 1500;
       let allAnswered = false;
-      if(!deadlinePassed){
+      // Require a minimum window before "everyone answered" can resolve it
+      // early. With a fast backend, if the host answers within a moment of
+      // creating the quiz, this check could go true before a second
+      // player's own poll cycle even had a chance to render the overlay for
+      // the first time — resolving (and hiding) it before they ever saw it.
+      const minVisibleElapsed = Date.now() - (S.party.quiz.createdAt||0) >= 2500;
+      if(!deadlinePassed && minVisibleElapsed){
         const keys = await listSharedKeys('partyquiz:'+S.roomCode+':'+quizId+':');
         allAnswered = keys.length >= S.room.players.length;
       }
@@ -10906,8 +10942,8 @@
     if(!partyInUntimedBettingMoment()) return;
     const roundKey = partyCurrentRoundKey();
     if(roundKey && S.party.quizFiredForRoundKey===roundKey) return; // already had a quiz this round
-    if(Date.now()-(S.party.lastQuizAt||0) < 25000) return; // pace: at most one quiz per ~25s+
-    if(Math.random() > 0.06) return; // low per-tick probability, so it feels occasional not constant
+    if(Date.now()-(S.party.lastQuizAt||0) < 45000) return; // pace: at most one quiz per ~45s+
+    if(Math.random() > 0.025) return; // low per-tick probability, so it feels rare not constant
     const fresh = await readShared(partyKey(S.roomCode));
     if(!fresh || fresh.quiz) return;
     const q = partyGenQuizQuestion();
