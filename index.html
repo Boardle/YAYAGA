@@ -1546,6 +1546,10 @@
         <button type="button" class="mode-opt" data-mode="mixed">🎲 랜덤</button>
       </div>
       <p class="muted-small hidden" id="seotdaModeDesc" style="margin-top:6px;"></p>
+      <label class="party-check-row" style="margin-top:10px;">
+        <input type="checkbox" id="seotdaTwoDeck"> 🎴🎴 2벌 (카드 2세트 · 40장)
+      </label>
+      <p class="muted-small" style="margin-top:4px;">같은 카드가 2장씩 있어요. 88·33·11광땡이 추가돼요.</p>
     </div>
     <div class="field" id="seotdaMissionField" style="display:none;">
       <label>미션 모드</label>
@@ -1713,7 +1717,7 @@
     </div>
     <div class="rules-section">
       <h4>암행어사</h4>
-      <p>일팔광땡과 일삼광땡을 이길 수 있음</p>
+      <p>18광땡 · 13광땡을 이길 수 있음<br><span class="muted-small">88·33·11·38광땡은 못 잡아요.</span></p>
       <div class="rules-example-cards" id="rulesEx-amhaeng"></div>
     </div>
     <div class="rules-section">
@@ -4395,12 +4399,15 @@
     1:['gwang','tti'], 2:['tti','meong'], 3:['gwang','tti'], 4:['tti','meong'], 5:['tti','meong'],
     6:['tti','meong'], 7:['tti','meong'], 8:['gwang','meong'], 9:['tti','meong'], 10:['tti','meong']
   };
-  function buildSeotdaDeck(){
+  function buildSeotdaDeck(deckCount){
+    const copies = (deckCount===2) ? 2 : 1;
     const deck = [];
-    for(let m=1;m<=10;m++){
-      SEOTDA_MONTH_CARDS[m].forEach(type=> deck.push({month:m, type}));
+    for(let n=0;n<copies;n++){
+      for(let m=1;m<=10;m++){
+        SEOTDA_MONTH_CARDS[m].forEach(type=> deck.push({month:m, type}));
+      }
     }
-    return deck; // 20 cards total
+    return deck; // 20 cards per deck
   }
   function shuffleDeck(deck){
     const d = deck.slice();
@@ -4418,19 +4425,28 @@
   }
 
   // Base (non-conditional) hand value: pairs, 광땡, named 2-card combos, or plain 끗수.
+  // Two identical 광 cards are only possible in a 2-deck (2벌) game. They're
+  // 4x rarer than the mixed-month 광땡 (only one way to draw both copies of a
+  // given 광, versus 2x2 ways to pair two different 광), so they rank above.
+  // This check must come BEFORE the same-month 땡 check below, or 1광+1광
+  // would fall through and score as a plain 1땡.
+  const SEOTDA_GWANG_RANK = {
+    '8-8': {tiebreak:6, label:'88광땡'},
+    '3-3': {tiebreak:5, label:'33광땡'},
+    '1-1': {tiebreak:4, label:'11광땡'},
+    '3-8': {tiebreak:3, label:'38광땡'},
+    '1-8': {tiebreak:2, label:'18광땡'},
+    '1-3': {tiebreak:1, label:'13광땡'},
+  };
   function evaluateNormalHand(cards){
     if(!cards || cards.length<2) return {tier:0, tiebreak:0, label:'망통'};
     const [a,b] = cards;
+    if(a.type==='gwang' && b.type==='gwang'){
+      const info = SEOTDA_GWANG_RANK[[a.month,b.month].sort((x,y)=>x-y).join('-')];
+      if(info) return {tier:10, tiebreak:info.tiebreak, label:info.label};
+    }
     if(a.month===b.month){
       return {tier:8, tiebreak:a.month, label:a.month+'땡'};
-    }
-    if(a.type==='gwang' && b.type==='gwang'){
-      const set = new Set([a.month,b.month]);
-      let label, tiebreak;
-      if(set.has(3)&&set.has(8)){ label='38광땡'; tiebreak=3; }
-      else if(set.has(1)&&set.has(8)){ label='18광땡'; tiebreak=2; }
-      else { label='13광땡'; tiebreak=1; }
-      return {tier:10, tiebreak, label};
     }
     const named = {
       '1-2': {tier:7, label:'알리'},
@@ -4508,7 +4524,10 @@
       }
       if(h.special==='amhaeng'){
         const best = bestOtherTier(id);
-        if(best && best.tier===10 && best.label!=='38광땡') return { winnerId:id, replay:false };
+        // Catches only 18광땡 and 13광땡 — everything else (88, 33, 11, 38)
+        // is immune.
+        const AMHAENG_CATCHES = ['18광땡','13광땡'];
+        if(best && best.tier===10 && AMHAENG_CATCHES.includes(best.label)) return { winnerId:id, replay:false };
       }
     }
     // 2) Replay-triggering specials
@@ -4576,14 +4595,18 @@
     const modeVal = modeBtn ? modeBtn.dataset.mode : '2';
     const isMixed = modeVal==='mixed';
     const cardMode = isMixed ? 2 : (modeVal==='holdem' ? 'holdem' : parseInt(modeVal,10));
-    if(!isMixed && cardMode===4 && S.room.players.length>5){
-      showToast('4장 섯다는 덱이 20장뿐이라 최대 5명까지만 가능해요');
+    const twoDeckEl = document.getElementById('seotdaTwoDeck');
+    const deckCount = (twoDeckEl && twoDeckEl.checked) ? 2 : 1;
+    // A 2-deck shoe is 40 cards, so the 4-card player cap doubles.
+    const maxFourCard = deckCount===2 ? 10 : 5;
+    if(!isMixed && cardMode===4 && S.room.players.length>maxFourCard){
+      showToast('4장 섯다는 덱이 '+(20*deckCount)+'장이라 최대 '+maxFourCard+'명까지만 가능해요');
       return;
     }
     const missionBtn = document.querySelector('#seotdaMissionToggle .mode-opt.active');
     const missionMode = (isMixed || cardMode>=3 || cardMode==='holdem') && missionBtn && missionBtn.dataset.mission==='1';
     document.getElementById('seotdaSetupModal').classList.add('hidden');
-    await beginSeotda(startCoins, baseBet, cardMode, missionMode, isMixed);
+    await beginSeotda(startCoins, baseBet, cardMode, missionMode, isMixed, deckCount);
   });
 
   // Per-session client-side state that is keyed by handNumber. Because
@@ -4628,7 +4651,7 @@
     S.indianMySubmitted = null;
   }
 
-  async function beginSeotda(startCoins, baseBet, cardMode, missionMode, mixedMode){
+  async function beginSeotda(startCoins, baseBet, cardMode, missionMode, mixedMode, deckCount){
     resetPerSessionClientState();
     const freshRoom = await readShared(roomKey(S.roomCode)) || S.room;
     freshRoom.players.forEach(p=>{ p.coins = (S.party && S.party.active && S.party.carriedCoins) ? (S.party.carriedCoins[p.id] ?? startCoins) : startCoins; });
@@ -4636,6 +4659,7 @@
 
     const state = {
       sessionId: Date.now()+'_'+Math.floor(Math.random()*1000000),
+      deckCount: (deckCount===2) ? 2 : 1,
       startCoins, baseBet, cardMode: ([2,3,4].includes(cardMode) || cardMode==='holdem') ? cardMode : 2, missionMode: !!missionMode, mixedMode: !!mixedMode,
       dealerIndex: 0,
       handNumber: 1,
@@ -4686,7 +4710,7 @@
     let dealtHands, dealtCommunity, dealtReserve;
     while(attempt<5){
       attempt++;
-      const deck = shuffleDeck(buildSeotdaDeck());
+      const deck = shuffleDeck(buildSeotdaDeck(state.deckCount));
       const hands = {};
       let community = null, reserve;
       if(isHoldem){
@@ -4700,11 +4724,15 @@
       }
       const seen = new Set();
       let dupeFound = false;
-      const allDealt = Object.values(hands).flat().concat(community?[community]:[]);
-      for(const c of allDealt){
-        const key = c.month+'_'+c.type;
-        if(seen.has(key)){ dupeFound = true; break; }
-        seen.add(key);
+      // A 2-deck shoe legitimately contains each card twice, so duplicates
+      // are a normal outcome there — only a single deck can never repeat.
+      if(state.deckCount!==2){
+        const allDealt = Object.values(hands).flat().concat(community?[community]:[]);
+        for(const c of allDealt){
+          const key = c.month+'_'+c.type;
+          if(seen.has(key)){ dupeFound = true; break; }
+          seen.add(key);
+        }
       }
       if(!dupeFound){
         dealtHands = hands; dealtCommunity = community; dealtReserve = reserve;
@@ -4783,6 +4811,9 @@
     // deal the same card twice in one hand. If this ever fires, it's a real
     // bug — log everything needed to diagnose it immediately.
     (function seotdaVerifyNoDuplicateDeal(){
+      // In a 2-deck game each card genuinely exists twice, so duplicates are
+      // expected — this check only means anything for a single deck.
+      if(state.deckCount===2) return;
       const seen = new Map();
       const dupes = [];
       Object.keys(state.hands||{}).forEach(id=>{
@@ -5095,7 +5126,9 @@
     if(m){
       const d1 = KOR_DIGIT_ROMAN[parseInt(m[1],10)] || m[1];
       const d2 = KOR_DIGIT_ROMAN[parseInt(m[2],10)] || m[2];
-      return d1+d2+' guang dang';
+      // Same-digit pairs (88/33/11광땡) slur together without a break —
+      // space them so the voice articulates both digits.
+      return (m[1]===m[2] ? d1+' '+d2 : d1+d2)+' guang dang';
     }
     m = label.match(/^(\d+)땡/);
     if(m){
@@ -6523,7 +6556,7 @@
     const other = cards[jokerIdx===0 ? 1 : 0];
     if(!other || other.type==='joker') return {tier:0, tiebreak:0, label:'조커'};
     let best = null;
-    buildSeotdaDeck().forEach(candidate=>{
+    buildSeotdaDeck(S.seotda && S.seotda.deckCount).forEach(candidate=>{
       const trial = jokerIdx===0 ? [candidate, other] : [other, candidate];
       const ev = evaluateSeotdaHand(trial);
       if(!best || compareNormal(ev, best)>0) best = ev;
@@ -6605,6 +6638,7 @@
     // private card. Checks the effective hands (what actually shows at
     // showdown), so it catches finalChoice-level issues too, not just raw deals.
     (function seotdaVerifyNoDuplicateShowdown(){
+      if(fresh.deckCount===2) return; // duplicates are legitimate with two decks
       const seen = new Map();
       const dupes = [];
       contenders.forEach(id=>{
@@ -7130,7 +7164,7 @@
     if(ladder && !ladder.dataset.filled){
       ladder.dataset.filled='1';
       const tiers = [
-        { name:'광땡', cards:[{month:3,type:'gwang'},{month:8,type:'gwang'}], caption:'숫자가 높은 월이 승리' },
+        { name:'광땡', cards:[{month:3,type:'gwang'},{month:8,type:'gwang'}], caption:'38 > 18 > 13 순서로 강함 · 2벌에서는 88 > 33 > 11 > 38 > 18 > 13' },
         { name:'장땡', cards:[{month:10,type:'tti'},{month:10,type:'meong'}], caption:'숫자가 높은 월이 승리' },
         { name:'알리', cards:[{month:1,type:'gwang'},{month:2,type:'tti'}], caption:null },
         { name:'독사', cards:[{month:1,type:'tti'},{month:4,type:'tti'}], caption:null },
